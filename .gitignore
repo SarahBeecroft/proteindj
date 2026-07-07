@@ -5,6 +5,7 @@
 pdj_results/
 models/
 test/
+work/*
 
 # Bindsweeper
 bindsweeper.config
