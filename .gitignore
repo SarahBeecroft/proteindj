@@ -21,3 +21,5 @@ bindsweeper/bindsweeper.config
 bindsweeper/quick_test_results/**
 bindsweeper/test_output/**
 bindsweeper/**/.nextflow/**
+example_proteinfold.config
+pawsey.config.bak
