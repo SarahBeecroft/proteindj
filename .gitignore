@@ -23,3 +23,5 @@ bindsweeper/test_output/**
 bindsweeper/**/.nextflow/**
 example_proteinfold.config
 pawsey.config.bak
+run.sh
+slurm-*.out
