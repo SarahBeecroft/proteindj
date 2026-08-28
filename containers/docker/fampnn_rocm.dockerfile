@@ -12,7 +12,7 @@ RUN apt-get update --quiet \
         python3-venv \
         python3-pip \
         build-essential \
-        software-properties-common
+        software-properties-common \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get autoremove --yes \
     && apt-get clean
