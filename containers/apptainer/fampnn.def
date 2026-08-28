@@ -37,6 +37,10 @@ From: nvidia/cuda:12.8.0-base-ubuntu24.04
 
 %environment
     export PYTHONPATH="/app/fampnn:$PYTHONPATH"
+    # torch>=2.6 defaults torch.load to weights_only=True, which cannot unpickle
+    # the defaultdict stored in FAMPNN's checkpoints. FAMPNN calls torch.load
+    # without weights_only, so this env var restores the old behaviour.
+    export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 %runscript
     cd /app/fampnn

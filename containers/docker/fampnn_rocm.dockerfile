@@ -52,6 +52,10 @@ RUN cd /app/fampnn \
     && pip install -e .
 
 ENV PYTHONPATH="/app/fampnn:$PYTHONPATH"
+# torch>=2.6 defaults torch.load to weights_only=True, which cannot unpickle
+# the defaultdict stored in FAMPNN's checkpoints. FAMPNN calls torch.load
+# without weights_only, so this env var restores the old behaviour.
+ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 RUN git clone https://github.com/SarahBeecroft/proteindj.git /tmp/proteindj \
     && mv /tmp/proteindj/scripts /scripts \
