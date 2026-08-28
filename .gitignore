@@ -25,3 +25,5 @@ example_proteinfold.config
 pawsey.config.bak
 run.sh
 slurm-*.out
+*.sif
+*.tar
