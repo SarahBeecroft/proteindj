@@ -351,6 +351,12 @@
           "description": "Use physics-based potentials during inference to improve physical plausibility of predictions (also known as Boltz-2x). Increases prediction time. Default = false",
           "hidden": true
         },
+        "boltz_no_kernels": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disable Boltz-2's custom CUDA kernels (cuequivariance/trifast) and use the pure-PyTorch implementation instead. Required on non-CUDA GPUs such as AMD/ROCm. Slower on NVIDIA GPUs, so leave disabled there. Default = false",
+          "hidden": true
+        },
         "boltz_use_templates": {
           "type": "boolean",
           "default": true,

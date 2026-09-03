@@ -72,6 +72,7 @@ process RunBoltz {
             --recycling_steps ${params.boltz_recycling_steps} \
             --sampling_steps ${params.boltz_sampling_steps} \
             ${params.boltz_use_potentials ? '--use_potentials' : ''} \
+            ${params.boltz_no_kernels ? '--no_kernels' : ''} \
             --cache /boltzcache \
             ${params.boltz_extra_config ? params.boltz_extra_config : ''} \
             2>&1 | tee boltz_${batch_id}.log
