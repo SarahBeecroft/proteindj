@@ -68,6 +68,7 @@ process RunBG {
         --devices 1 \
         --output bg_results \
         --cache /cache \
+        --use_kernels false \
         2>&1 | tee boltzgen_${task.index}.log
     """
 }
