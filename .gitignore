@@ -30,3 +30,5 @@ bindsweeper/**/.nextflow/**
 *.tar
 
 slurm-*.out
+*.pkl
+outputs/*
