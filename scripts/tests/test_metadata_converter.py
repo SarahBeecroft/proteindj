@@ -1,5 +1,6 @@
 """Tier A unit tests for metadata_converter.py."""
 import json
+import logging
 import pickle
 
 import numpy as np
@@ -306,6 +307,72 @@ def _write_jsonl(path, entries):
             f.write(json.dumps(entry) + '\n')
 
 class TestMergeAll:
+    @pytest.mark.parametrize("entries", [
+        [
+            {'fold_id': 0, 'seq_id': 1, 'description': 'fold_0_seq_1', 'mpnn_score': 0.5},
+            {'fold_id': 0, 'seq_id': 1, 'description': 'fold_0_seq_1_af2pred', 'af2_iptm': 0.8},
+        ],
+        [
+            {'fold_id': 0, 'seq_id': 1, 'description': 'fold_0_seq_1_af2pred', 'af2_iptm': 0.8},
+            {'fold_id': 0, 'seq_id': 1, 'description': 'fold_0_seq_1', 'mpnn_score': 0.5},
+        ],
+    ])
+    def test_prediction_description_beats_sequence_description_in_any_order(self, tmp_path, entries):
+        fold_file = tmp_path / "fold.jsonl"
+        _write_jsonl(fold_file, [{'fold_id': 0, 'rfd_time': 100}])
+        fold_seq_file = tmp_path / "fold_seq.jsonl"
+        _write_jsonl(fold_seq_file, entries)
+        out_file = tmp_path / "out.csv"
+
+        conv = MetadataConverter()
+        assert conv.merge_all(str(fold_file), str(fold_seq_file), str(out_file)) is True
+
+        row = pd.read_csv(out_file).iloc[0]
+        assert row['description'] == 'fold_0_seq_1_af2pred'
+
+    @pytest.mark.parametrize("entries", [
+        [
+            {'fold_id': 2, 'seq_id': 3, 'description': 'fold_2_seq_3_af2pred', 'af2_iptm': 0.8},
+            {'fold_id': 2, 'seq_id': 3, 'description': 'fold_2_seq_3_boltzpred', 'boltz_ptm': 0.9},
+            {'fold_id': 2, 'seq_id': 3, 'description': 'fold_2_seq_3_boltzpred', 'pr_RoG': 12.0},
+        ],
+        [
+            {'fold_id': 2, 'seq_id': 3, 'description': 'fold_2_seq_3_boltzpred', 'pr_RoG': 12.0},
+            {'fold_id': 2, 'seq_id': 3, 'description': 'fold_2_seq_3_boltzpred', 'boltz_ptm': 0.9},
+            {'fold_id': 2, 'seq_id': 3, 'description': 'fold_2_seq_3_af2pred', 'af2_iptm': 0.8},
+        ],
+    ])
+    def test_analysis_description_is_authoritative_in_any_order(self, tmp_path, entries):
+        fold_file = tmp_path / "fold.jsonl"
+        _write_jsonl(fold_file, [{'fold_id': 2, 'description': 'fold_2'}])
+        fold_seq_file = tmp_path / "fold_seq.jsonl"
+        _write_jsonl(fold_seq_file, entries)
+        out_file = tmp_path / "out.csv"
+
+        conv = MetadataConverter()
+        assert conv.merge_all(str(fold_file), str(fold_seq_file), str(out_file)) is True
+
+        row = pd.read_csv(out_file).iloc[0]
+        assert row['description'] == 'fold_2_seq_3_boltzpred'
+
+    def test_description_with_mismatched_ids_is_ignored(self, tmp_path, caplog):
+        fold_file = tmp_path / "fold.jsonl"
+        _write_jsonl(fold_file, [{'fold_id': 0}])
+        fold_seq_file = tmp_path / "fold_seq.jsonl"
+        _write_jsonl(fold_seq_file, [
+            {'fold_id': 0, 'seq_id': 1, 'description': 'fold_0_seq_1', 'mpnn_score': 0.5},
+            {'fold_id': 0, 'seq_id': 1, 'description': 'fold_9_seq_9_af2pred', 'af2_iptm': 0.8},
+        ])
+        out_file = tmp_path / "out.csv"
+
+        conv = MetadataConverter()
+        with caplog.at_level(logging.WARNING):
+            assert conv.merge_all(str(fold_file), str(fold_seq_file), str(out_file)) is True
+
+        row = pd.read_csv(out_file).iloc[0]
+        assert row['description'] == 'fold_0_seq_1'
+        assert "do not match metadata key" in caplog.text
+
     def test_merges_fold_only_metadata_into_fold_seq_entries(self, tmp_path):
         fold_file = tmp_path / "fold.jsonl"
         _write_jsonl(fold_file, [{'fold_id': 0, 'rfd_time': 100}])

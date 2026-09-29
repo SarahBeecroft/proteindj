@@ -38,6 +38,75 @@ logging.basicConfig(level=logging.INFO)
 
 class MetadataConverter:
     """Base class for converting metadata files to JSONL."""
+
+    @staticmethod
+    def _description_priority(record):
+        """Return the authority of a record's structure description.
+
+        Several pipeline stages emit metadata for the same ``(fold_id, seq_id)``.
+        Their descriptions refer to different versions of that design, so a plain
+        ``dict.update`` makes the result depend on channel arrival order.  Analysis
+        metadata is authoritative because it is generated from the structure sent
+        to final filtering.  Prediction-stage descriptions are the fallbacks, with
+        sequence-design names having the lowest priority.
+        """
+        keys = record.keys()
+
+        if any(key.startswith('pr_') for key in keys):
+            return 400
+        if any(key.startswith('boltz_') for key in keys):
+            return 300
+        if any(key.startswith('af2_') for key in keys):
+            return 200
+        if (
+            any(key.startswith(('mpnn_', 'fampnn_', 'seq_')) for key in keys)
+            or 'sequence' in record
+        ):
+            return 100
+        return 0
+
+    @staticmethod
+    def _description_ids(description):
+        """Extract fold/sequence IDs from a supported structure basename."""
+        if not isinstance(description, str):
+            return None
+
+        match = re.match(r'^fold_(\d+)(?:_seq_(\d+))?(?:_.+)?$', description)
+        if not match:
+            return None
+
+        return (
+            int(match.group(1)),
+            int(match.group(2)) if match.group(2) is not None else None,
+        )
+
+    def _merge_fold_seq_record(self, entry, data, key):
+        """Merge metadata while selecting description by semantic precedence."""
+        incoming_description = data.get('description')
+        incoming_priority = self._description_priority(data)
+
+        # Description is handled separately so ordinary metadata merging cannot
+        # accidentally replace the final structure name.
+        entry.update({name: value for name, value in data.items() if name != 'description'})
+
+        if not incoming_description:
+            return
+
+        description_ids = self._description_ids(incoming_description)
+        if description_ids is not None and description_ids != key:
+            logging.warning(
+                "Ignoring description '%s' because its IDs %s do not match metadata key %s",
+                incoming_description,
+                description_ids,
+                key,
+            )
+            return
+
+        current_priority = entry.get('_description_priority', -1)
+        if incoming_priority > current_priority:
+            entry['description'] = incoming_description
+            entry['_description_priority'] = incoming_priority
+
     def _is_fold_id_present(self, combined_entries, fold_id_to_check):
         # Iterate through the keys of combined_entries
         for key in combined_entries.keys():
@@ -138,11 +207,17 @@ class MetadataConverter:
                         if key not in combined_entries:
                             combined_entries[key] = {}
                             metadata_fold_seq_count += 1
-                        combined_entries[key].update(data)
+                        self._merge_fold_seq_record(combined_entries[key], data, key)
                         
                         # Fold-only Metadata Merging
                         if fold_id in metadata_fold_data:
-                            combined_entries[key].update(metadata_fold_data[fold_id])
+                            # A fold-level description cannot identify the final
+                            # sequence-level structure, so never let it overwrite one.
+                            combined_entries[key].update({
+                                name: value
+                                for name, value in metadata_fold_data[fold_id].items()
+                                if name != 'description'
+                            })
                             merge_count += 1
 
                     logging.info(f"Processed {metadata_fold_seq_count} fold_id + seq_id metadata entries")
@@ -161,6 +236,10 @@ class MetadataConverter:
                         **fold_only_entry
                     }
             logging.info(f"Added {fold_only_count} fold-only entries")
+
+            # Internal merge bookkeeping is not part of the published metadata.
+            for entry in combined_entries.values():
+                entry.pop('_description_priority', None)
 
             # DataFrame Creation
             logging.info("Creating DataFrame from combined entries")

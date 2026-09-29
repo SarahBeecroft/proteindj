@@ -80,6 +80,17 @@ def main() -> None:
     if changed:
         print(f"  version → \"{new_full}\"")
 
+    # ── bindsweeper/uv.lock ─────────────────────────────────────────────────────
+    uv_lock = root / "bindsweeper" / "uv.lock"
+    print(f"\n[bindsweeper/uv.lock]")
+    changed = replace_in_file(
+        uv_lock,
+        r'(name = "bindsweeper"\nversion = ")[^"]*(")',
+        rf"\g<1>{new_full}\g<2>",
+    )
+    if changed:
+        print(f"  bindsweeper version → \"{new_full}\"")
+
     # ── apptainer/*.def ────────────────────────────────────────────────────────
     def_files = sorted((root / "apptainer").glob("*.def"))
     print(f"\n[apptainer/*.def]  (label Version → {new_major_minor})")
