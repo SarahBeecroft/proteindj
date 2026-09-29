@@ -17,7 +17,7 @@ export NXF_SINGULARITY_CACHEDIR=$MYSCRATCH/containers/
 export SINGULARITY_CACHEDIR=$MYSCRATCH/containers/
 
 nextflow run main.nf -c pawsey.config \
-    --design_mode boltzgen_denovo --profile test,boltzgen_denovo_monomer,boltzgen_denovo_binder,af2_boltz_pred \
+    --design_mode bindcraft_denovo --profile test,bindcraft_denovo,rfd_bindcraft_binder \
     -resume \
     --num_designs 1 --seqs_per_design 1 --design_length 5 \
     --input_pdb benchmarkdata/5o45_pd-l1.pdb \
