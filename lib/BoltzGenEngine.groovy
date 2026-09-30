@@ -22,6 +22,9 @@ class BoltzGenEngine extends DesignEngine {
         if (params.design_mode == 'boltzgen_denovo' && !params.input_pdb && (params.hotspot_residues || params.bg_not_binding_residues)) {
             throw new IllegalArgumentException("hotspot_residues/bg_not_binding_residues require a target - please provide input_pdb, or leave them null for monomer design.")
         }
+        if (params.bg_use_kernels != null && !(params.bg_use_kernels.toString().toLowerCase() in ['auto', 'true', 'false'])) {
+            throw new IllegalArgumentException("bg_use_kernels must be one of 'auto', 'true' or 'false'.")
+        }
         if (params.flexible_residues && !params.flexible_residues.matches(Utils.RESIDUE_SPEC_REGEX)) {
             throw new IllegalArgumentException("flexible_residues format invalid. Acceptable: 'A10-13,A16,B'.")
         }
@@ -68,6 +71,9 @@ class BoltzGenEngine extends DesignEngine {
         }
         if (params.flexible_residues) {
             messages << "* Flexible residues = ${params.flexible_residues}"
+        }
+        if (params.bg_use_kernels != null && params.bg_use_kernels.toString().toLowerCase() != 'auto') {
+            messages << "* Use kernels = ${params.bg_use_kernels.toString().toLowerCase()}"
         }
         return messages
     }

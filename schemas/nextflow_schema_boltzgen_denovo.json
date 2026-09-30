@@ -76,6 +76,16 @@
           "type": "string",
           "description": "Target residues the binder should NOT contact. Comma-separated tokens, each a chain-qualified residue e.g. 'A200', a chain-qualified range e.g. 'A210-215', or a bare chain ID e.g. 'B' meaning the whole chain. Optional for boltzgen_denovo and boltzgen_motifscaff binder design modes. e.g. 'A200,A210-215,B'.",
           "pattern": "^[A-Z](\\d+(-\\d+)?)?(,[A-Z](\\d+(-\\d+)?)?)*$"
+        },
+        "bg_use_kernels": {
+          "type": "string",
+          "default": "auto",
+          "description": "Whether BoltzGen uses its cuEquivariance GPU kernels. Choose from 'auto' (use kernels if the GPU compute capability is >= 8), 'true' or 'false'. Set to 'false' on AMD/ROCm GPUs, where the kernels are unavailable. Applies to boltzgen_denovo and boltzgen_motifscaff modes.",
+          "enum": [
+            "auto",
+            "true",
+            "false"
+          ]
         }
       },
       "required": [

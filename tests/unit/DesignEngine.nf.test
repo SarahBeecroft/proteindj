@@ -167,6 +167,42 @@ nextflow_function {
         }
     }
 
+    test("BoltzGenEngine.validateParams rejects an invalid bg_use_kernels value") {
+        when {
+            function {
+                """
+                input[0] = "[A1-88/0]"
+                """
+            }
+        }
+        then {
+            assert function.success
+            def threw = false
+            try {
+                new BoltzGenEngine([design_mode: "boltzgen_denovo", design_length: "65-150", bg_use_kernels: "maybe"], false).validateParams()
+            } catch (IllegalArgumentException e) {
+                threw = true
+            }
+            assert threw
+        }
+    }
+
+    test("BoltzGenEngine.validateParams accepts bg_use_kernels as a string or boolean") {
+        when {
+            function {
+                """
+                input[0] = "[A1-88/0]"
+                """
+            }
+        }
+        then {
+            assert function.success
+            ["auto", "true", "false", "FALSE", true, false, null].each { value ->
+                new BoltzGenEngine([design_mode: "boltzgen_denovo", design_length: "65-150", bg_use_kernels: value], false).validateParams()
+            }
+        }
+    }
+
     test("BoltzGenEngine.validateParams accepts a valid boltzgen_motifscaff spec") {
         when {
             function {

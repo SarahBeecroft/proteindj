@@ -66,6 +66,7 @@ process RunBG {
         --moldir /cache/mols.zip \
         --num_designs ${batch_size} \
         --devices 1 \
+        --use_kernels ${params.bg_use_kernels != null ? params.bg_use_kernels.toString().toLowerCase() : 'auto'} \
         --output bg_results \
         --cache /cache \
         2>&1 | tee boltzgen_${task.index}.log
