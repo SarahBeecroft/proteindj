@@ -13,7 +13,7 @@
             "properties": {
                 "design_mode": {
                     "type": "string",
-                    "description": "Pipeline mode. Choose from 'bindcraft_denovo', 'boltzgen_denovo', 'boltzgen_motifscaff', or 'rfd_denovo', 'rfd_foldcond', 'rfd_motifscaff', 'rfd_partialdiff' to use RFdiffusion"
+                    "description": "Pipeline mode. Choose from 'bindcraft_denovo', 'boltzgen_denovo', 'boltzgen_motifscaff', or 'rfd_denovo', 'rfd_foldcond', 'rfd_motifscaff', 'rfd_partialdiff' to use RFdiffusion, or 'rfd4_denovo' for RFD4-Proteina binder co-design"
                 },
                 "num_designs": {
                     "type": "integer",
@@ -63,9 +63,9 @@
                 },
                 "flexible_residues": {
                     "type": "string",
-                    "description": "Residues whose structure should NOT be conditioned on (BoltzGen structure_groups visibility=0 / RFdiffusion contigmap.inpaint_str), useful for disordered/flexible regions e.g. loops or IDPs. Comma-separated tokens, each a chain-qualified residue e.g. 'B16', a chain-qualified range e.g. 'B10-13', or a bare chain ID e.g. 'C' meaning the whole chain is flexible. In boltzgen_motifscaff/rfd_motifscaff mode this may also reference chain A residues kept by motifscaff_spec. Used by boltzgen_denovo, boltzgen_motifscaff, rfd_motifscaff, rfd_partialdiff, and binder design with rfd_denovo/rfd_foldcond.",
+                    "description": "Residues whose structure should NOT be conditioned on (BoltzGen structure_groups visibility=0 / RFdiffusion contigmap.inpaint_str / RFD4 coordinate conditioning removed), useful for disordered/flexible regions e.g. loops or IDPs. Comma-separated tokens, each a chain-qualified residue e.g. 'B16', a chain-qualified range e.g. 'B10-13', or a bare chain ID e.g. 'C' meaning the whole chain is flexible. In boltzgen_motifscaff/rfd_motifscaff mode this may also reference chain A residues kept by motifscaff_spec. Used by boltzgen_denovo, boltzgen_motifscaff, rfd_motifscaff, rfd_partialdiff, and binder design with rfd_denovo/rfd_foldcond/rfd4_denovo. In RFD4 the target sequence remains fixed.",
                     "pattern": "^([A-Za-z]+(\\d+(-\\d+)?)?)(,[A-Za-z]+(\\d+(-\\d+)?)?)*$"
-                },                
+                },
                 "motifscaff_spec": {
                     "type": "string",
                     "description": "Chain A architecture spec: an ordered, comma-separated list of chain-A 'keep' tokens (e.g. 'A10-50' or 'A60') and bare-digit 'insert' tokens (e.g. '10' for an exact count or '7-10' for a sampled range), e.g. '7-10,A1-60,5,A70-100,10' inserts 7-10 residues at the N-terminus, keeps residues A1-60, inserts 5 residues, keeps A70-100, then appends 10 residues at the C-terminus. Any original chain A residue not covered by a keep token is deleted. If null, chain A's architecture (length) is left unchanged. Used by boltzgen_motifscaff and rfd_motifscaff.",
@@ -197,6 +197,23 @@
                     "description": "Path to input files when skipping stages e.g. './rfd_results'",
                     "format": "directory-path",
                     "hidden": true
+                },
+                "rfd4_models": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "default": "${projectDir}/models/rfd4",
+                    "description": "Directory containing the RFD4-Proteina config.json and model.safetensors files, populated by scripts/download_models.sh."
+                },
+                "rfd4_triton_cache": {
+                    "type": ["string", "null"],
+                    "format": "directory-path",
+                    "description": "Persistent cache shared by RFD4 tasks for cuEquivariance tuning data and compiled Triton kernels. Defaults to $HOME/.cache/proteindj/rfd4. Set to null to store the cache in each task's work directory."
+                },
+                "rfd4_inference_batch_size": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                    "description": "RFD4 designs sampled simultaneously within each GPU task. Capped at the designs assigned to that GPU; does not change pipeline GPU allocation."
                 }
             }
         },
@@ -244,7 +261,7 @@
                     "type": "boolean",
                     "description": "Whether to preserve/fix the interface residues of the binder designed by BindCraft during the subsequent sequence design stage (Recommended to leave as true).",
                     "hidden": true
-                },                 
+                },
                 "bc_advanced_json": {
                     "type": "string",
                     "description": "Path to a custom advanced settings json file. Not recommended unless you know what you are doing. Some parameters will be ignored as they apply to BindCraft routines downstream of fold design that are not implemented here e.g. MPNN parameters.",
@@ -490,9 +507,8 @@
                 },
                 "boltz_input_msa": {
                     "type": "string",
-                    "description": "Path to a multiple sequence alignment (.a3m format) for the input PDB. Applies to chain B in binder modes or chain A in monomer modes. If null, single-sequence mode is used.",
-                    "format": "file-path",
-                    "pattern": "\\.a3m$",
+                    "description": "Comma-separated list of one-or-more multiple sequence alignment files (.a3m format) for the input PDB. In binder modes, applied to the non-binder (target) chain(s) (e.g. B, or B+C+... if there are multiple target chains): a single file is applied to all target chains (e.g. an identical-sequence multi-chain target), or multiple files are matched positionally one-per-chain in chain order. In monomer modes, applied to chain A. MSA must match the entire sequence of the chain it is applied to or will be ignored by Boltz for that chain. If null, single-sequence mode is used. e.g. 'lib/pdl1_msa.a3m' or 'lib/chainB_msa.a3m,lib/chainC_msa.a3m'",
+                    "pattern": "^[^,]+\\.a3m(,[^,]+\\.a3m)*$",
                     "hidden": true
                 },
                 "boltz_extra_config": {
@@ -784,7 +800,7 @@
                 },
                 "pr_max_intface_deltag": {
                     "type": "number",
-                "description": "Maximum predicted binding free energy at the interface (PRODIGY IC-NIS model, kcal/mol; more negative is better)",
+                    "description": "Maximum predicted binding free energy at the interface (PRODIGY IC-NIS model, kcal/mol; more negative is better)",
                     "hidden": true
                 },
                 "pr_max_intface_deltagtobsa": {
