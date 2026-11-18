@@ -39,9 +39,12 @@ From: nvidia/cuda:12.9.1-base-ubuntu22.04
         'openmm[cuda12]' \
         pdbfixer \
         pyfaspr \
-        tensorflow==2.20.0 \
-        torch \
-        torchvision
+        tensorflow==2.20.0 
+
+    uv pip install --system \
+        torch==2.13.0 \
+        torchvision \
+        --index-url https://download.pytorch.org/whl/cu126
 
     # Clean up
     rm -rf /var/lib/apt/lists/*
