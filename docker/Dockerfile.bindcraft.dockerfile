@@ -1,50 +1,56 @@
 ARG GPU_BACKEND=cuda
+ARG ROCM_VERSION=7.0.2
 
-# ---- Backend-specific base images ----
 FROM nvidia/cuda:12.8.0-base-ubuntu24.04 AS base-cuda
-FROM rocm/dev-ubuntu-24.04:latest AS base-rocm
+FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION} AS base-rocm
 
-# Selects one of the above as the working base for the rest of the build
-FROM base-${GPU_BACKEND} AS final
-ARG GPU_BACKEND
+# ---- Shared system deps + Miniforge ----
+FROM base-${GPU_BACKEND} AS common
+ARG MINIFORGE_VERSION=26.9.4-2
 
-LABEL org.opencontainers.image.description="BindCraft container (${GPU_BACKEND} backend)"
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# ---- Shared system deps (identical for both backends) ----
-RUN apt-get -q update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        git wget ca-certificates build-essential libgfortran5 && \
-    apt-get autoremove -y && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Apptainer ignores ENTRYPOINT, so the conda env is installed into base and put on PATH.
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONNOUSERSITE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/opt/conda/bin:${PATH}
 
-# ---- Shared Miniforge + conda env creation ----
-RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh && \
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update --quiet && \
+    apt-get install --no-install-recommends --yes --quiet \
+        build-essential \
+        ca-certificates \
+        git \
+        libgfortran5 \
+        procps \
+        wget && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN wget -q "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh" -O /tmp/miniforge.sh && \
     bash /tmp/miniforge.sh -b -p /opt/conda && rm /tmp/miniforge.sh
-ENV PATH="/opt/conda/bin:${PATH}"
 
-RUN /opt/conda/bin/conda create -n BindCraft python=3.10 -y && \
-    . /opt/conda/etc/profile.d/conda.sh && conda activate BindCraft && \
-    conda install -c conda-forge \
-        pip pandas matplotlib 'numpy<2.0.0' biopython scipy pdbfixer openmm seaborn \
-        tqdm jupyter ffmpeg fsspec py3dmol chex dm-haiku 'flax<0.10.0' \
-        dm-tree joblib ml-collections immutabledict optax -y && \
-    conda clean -a -y
+# ---- CUDA environment: jax 0.6.2, matching the v3.0 image ----
+FROM common AS build-cuda
+COPY envs/bindcraft-cuda.yml /tmp/env.yml
+RUN mamba env update -n base -y -f /tmp/env.yml && mamba clean -afy
 
-# ---- Backend-specific GPU package install (this is where CUDA/ROCm actually diverge) ----
-ENV PIP_NO_CACHE_DIR=1
-RUN . /opt/conda/etc/profile.d/conda.sh && conda activate BindCraft && \
-    if [ "$GPU_BACKEND" = "cuda" ]; then \
-        conda install -c nvidia 'cuda-nvcc=12.*' 'cuda-version=12' cudnn -y && \
-        pip install --upgrade "jax[cuda12]"; \
-    elif [ "$GPU_BACKEND" = "rocm" ]; then \
-        pip install --upgrade jax jaxlib -f https://storage.googleapis.com/jax-releases/jax_rocm_releases.html; \
-    else \
-        echo "Unknown GPU_BACKEND: $GPU_BACKEND" && exit 1; \
-    fi
+# ---- ROCm environment: only rocm-jax 0.6.0 wheels exist for ROCm 7 ----
+FROM common AS build-rocm
+COPY envs/bindcraft-rocm.yml /tmp/env.yml
+RUN mamba env update -n base -y -f /tmp/env.yml && mamba clean -afy
+ENV JAX_PLATFORMS=rocm,cpu \
+    OPENMM_PLATFORM_ORDER=HIP,OpenCL,CPU \
+    OPENMM_DEFAULT_PLATFORM=HIP \
+    XLA_FLAGS='--xla_gpu_enable_command_buffer= --xla_gpu_autotune_level=0' \
+    AMD_COMGR_CACHE_DIR=/tmp/amd_comgr_cache
 
-# ---- Shared application layer ----
-RUN . /opt/conda/etc/profile.d/conda.sh && conda activate BindCraft && \
-    pip install git+https://github.com/sokrypton/ColabDesign.git --no-deps && \
-    pip install freesasa
+FROM build-${GPU_BACKEND} AS final
+ARG GPU_BACKEND
+ENV PROTEINDJ_TOOL=bindcraft \
+    PROTEINDJ_GPU_BACKEND=${GPU_BACKEND}
+
+RUN pip install --no-deps git+https://github.com/sokrypton/ColabDesign.git@8fd167defd1b0f98e29f00584ff4f3987e6935dc
 
 RUN git clone https://github.com/PapenfussLab/FreeBindCraft.git /opt/BindCraft && \
     git -C /opt/BindCraft checkout 7a202e2 && \
@@ -53,7 +59,7 @@ RUN git clone https://github.com/PapenfussLab/FreeBindCraft.git /opt/BindCraft &
              /opt/BindCraft/functions/FASPR \
              /opt/BindCraft/functions/sc
 
-ENV CONDA_DEFAULT_ENV=BindCraft
+ENV BINDCRAFT_HOME=/opt/BindCraft
 WORKDIR /opt/BindCraft
-ENTRYPOINT ["/bin/bash", "-c", "source /opt/conda/etc/profile.d/conda.sh && conda activate BindCraft && exec \"$@\"", "--"]
-CMD ["/bin/bash", "--norc"]
+
+COPY smoke/ /opt/smoke/

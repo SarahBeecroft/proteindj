@@ -1,7 +1,8 @@
-# Multi-Backend Container Build Workflow
+# Container Build Workflow
 
-This document describes how ProteinDJ's Docker containers are built (CUDA + ROCm) and published
-via GitHub Actions, and is a step-by-step checklist for adding a new container to the system.
+ProteinDJ's containers are Docker images built by GitHub Actions for two GPU backends (CUDA and
+ROCm) and pulled on the cluster with Apptainer. This document describes the setup and how to add
+a container.
 
 ---
 
@@ -11,144 +12,98 @@ via GitHub Actions, and is a step-by-step checklist for adding a new container t
 graph LR
     A["docker/Dockerfile.&lt;tool&gt;.dockerfile"] --> B[docker/docker-bake.hcl]
     B --> C[".github/workflows/build-containers.yml"]
-    C --> D["GHCR: ghcr.io/papenfusslab/&lt;tool&gt;:&lt;version&gt;-&lt;backend&gt;"]
+    C --> D["ghcr.io/hardylaboratory/proteindj/&lt;tool&gt;:&lt;version&gt;-&lt;backend&gt;"]
+    D --> E["nextflow.config: params.gpu_backend"]
 ```
 
 | File | Role |
 |---|---|
-| `docker/Dockerfile.<tool>.dockerfile` | One multi-stage Dockerfile per tool. A single `GPU_BACKEND` build arg (`cuda` or `rocm`) selects the base image and the GPU-framework install step; everything else is shared between backends. |
-| `docker/Dockerfile.template.dockerfile` | Scaffold to copy when adding a new tool. Not built directly — not referenced by `docker-bake.hcl`. |
-| `docker/docker-bake.hcl` | Single source of truth for tags, build args, and dockerfile paths, via [`docker buildx bake`](https://docs.docker.com/build/bake/). One `target` per tool/backend combination, grouped per tool. |
-| `.github/workflows/build-containers.yml` | CI. Detects which tool(s) changed (via `dorny/paths-filter`) and runs one `docker/bake-action` job per changed tool, per backend. |
+| `docker/Dockerfile.<tool>.dockerfile` | One Dockerfile per tool. The `GPU_BACKEND` build arg (`cuda` or `rocm`) selects the base image and GPU packages. |
+| `docker/envs/` | Conda environment files for tools that use conda (BindCraft). |
+| `docker/smoke/` | GPU-free checks copied into every image at `/opt/smoke`. |
+| `docker/docker-bake.hcl` | Single source of truth for tags, build args and the list of tools. |
+| `docker/Dockerfile.template.dockerfile` | Scaffold for a new tool. Not built. |
+| `.github/scripts/bake_matrix.py` | Reads `docker buildx bake --print` and selects the targets to build. |
+| `.github/workflows/build-containers.yml` | Plans the matrix, builds and pushes each target, then smoke-tests it. |
 
-Each tool's images are tagged `ghcr.io/papenfusslab/<tool>:<VERSION>-cuda` / `-rocm`, where
-`VERSION` is a variable in `docker-bake.hcl` (currently `v3.0`). This is a **floating tag**:
-rebuilding without bumping `VERSION` overwrites the existing tag rather than publishing a new one.
-Bump `VERSION` (or add a tool-specific version variable) when you want consumers to be able to
-pin to a specific release rather than "whatever is currently published."
+Images are tagged `ghcr.io/hardylaboratory/proteindj/<tool>:<VERSION>-cuda|rocm`. `python_tools`
+is CPU-only and has no backend suffix. `VERSION` is a variable in `docker-bake.hcl` and is kept in
+sync with `params.container_version` by `scripts/bump_version.py`. The tag is floating: a rebuild
+without a version bump overwrites it.
+
+### Version policy
+
+- One ROCm 6.x (`ROCM6_VERSION`, jax 0.4.x wheels, used by `dl_binder_design`) and one ROCm 7.x
+  (`ROCM7_VERSION`, everything else) across all images. `rfdiffusion` takes its ROCm release from
+  AMD's `rocm/dgl` base image (7.0.0).
+- `TORCH_ROCM6_INDEX` and `TORCH_ROCM7_INDEX` must match the ROCm version. Only some torch
+  versions are published for each index, so check
+  `https://download.pytorch.org/whl/<index>/torch/` before bumping.
+- Pin every git clone to a commit and every GPU framework to a version.
 
 ---
 
 ## 2. Known CUDA/ROCm parity gaps
 
-Not every GPU framework has an equally mature ROCm build. Before wiring up the ROCm side of a new
-Dockerfile, check whether the tool depends on any of these:
-
 | Dependency | ROCm status |
 |---|---|
-| PyTorch | Official ROCm wheels via `--index-url https://download.pytorch.org/whl/rocm<X.Y>`. Straightforward. |
-| JAX | ROCm builds exist but lag behind CUDA releases and rarely match a pinned CUDA version exactly. |
-| DGL | No official ROCm wheels; building from source is non-trivial and may not be supported at all. |
-| OpenMM | CUDA/OpenCL platforms are standard; there is no `openmm[rocm]` pip extra. |
-| Custom CUDA kernels (e.g. SE3Transformer-style extensions) | Usually hard-coded to CUDA; assume no ROCm support unless verified. |
+| PyTorch | Official wheels from `https://download.pytorch.org/whl/rocm<X.Y>`. |
+| JAX | Only the ROCm/jax and ROCm/rocm-jax release wheels (0.4.34 for ROCm 6, 0.6.0 for ROCm 7), so versions differ from CUDA. |
+| DGL | Use AMD's `rocm/dgl` image. |
+| OpenMM | `openmm[hip6]` / `OpenMM-HIP-7` provide the `HIP` platform. There is no `CUDA` platform. |
+| cuEquivariance (Boltz, BoltzGen, RFD4) | NVIDIA only. Boltz needs `--no_kernels` and BoltzGen `--use_kernels false`; the pipeline sets both when `gpu_backend = 'rocm'`. RFD4 is CUDA-only. |
 
-If a tool depends on one of the problem cases above, it's fine to ship CUDA-only — just omit the
-`-rocm` bake target and build job for that tool rather than forcing a broken ROCm build.
+If a tool has no working ROCm path, give it only a `-cuda` target and block the `rocm` backend for
+it in the pipeline (see `rfd4_denovo` in `main.nf`).
 
 ---
 
 ## 3. Adding a new container
 
-### 3.1 Create the Dockerfile
+1. **Dockerfile.** Copy `docker/Dockerfile.template.dockerfile` to
+   `docker/Dockerfile.<tool>.dockerfile` and fill in the placeholders. Keep these rules:
+   - Apptainer ignores `ENTRYPOINT`, so put venvs and conda environments on `PATH` with `ENV`.
+   - Set `PYTHONNOUSERSITE=1`; Apptainer mounts `$HOME` and user pip installs would shadow the image.
+   - Install `procps`; Nextflow needs `ps` in the container.
+   - Keep `ENV PROTEINDJ_TOOL=<tool>` and `PROTEINDJ_GPU_BACKEND=${GPU_BACKEND}`.
+   - Finish with `COPY smoke/ /opt/smoke/`, plus `RUN python /opt/smoke/check_torch_backend.py` if
+     the image uses torch.
+2. **Smoke test.** Add a `<tool>)` case to `docker/smoke/smoke_test.sh` with imports and `--help`
+   calls that need no GPU.
+3. **Bake.** Add the tool name to the `tool` list in the `gpu` target of `docker/docker-bake.hcl`
+   and its `-cuda`/`-rocm` names to the `default` group. If it needs the ROCm 6 stack, add it to
+   the two `tool == "dl_binder_design"` conditions. CPU-only tools get their own target like
+   `python_tools`.
+4. **Pipeline.** Add a `withLabel` block to `nextflow.config` using
+   `${params.container_registry}/<tool>:${params.container_version}-${params.gpu_backend}` and
+   `${params.gpu_backend == 'rocm' ? '--rocm' : '--nv'}`.
+5. **Build.** Push to a branch listed in the workflow's `push.branches`, or run the workflow with
+   the `targets` input (for example `<tool>-cuda,<tool>-rocm`). The plan job selects only the
+   targets whose Dockerfile or `docker/envs/<tool>-*` files changed; edits to `docker-bake.hcl`,
+   `docker/smoke/` or the workflow rebuild everything.
 
-1. Copy the template:
-   ```bash
-   cp docker/Dockerfile.template.dockerfile docker/Dockerfile.<tool>.dockerfile
-   ```
-2. Fill in every `<PLACEHOLDER>`: base images (pin a specific tag, not `:latest`), repo URL +
-   pinned commit SHA, Python version, apt/pip dependencies, and the CUDA-vs-ROCm GPU package
-   install block.
-3. If the tool has no viable ROCm path (see §2), delete the `elif [ "$GPU_BACKEND" = "rocm" ]`
-   branch's real install and leave it erroring out (or just don't create a `-rocm` bake target —
-   see §3.2).
-
-### 3.2 Register it in `docker-bake.hcl`
-
-Add a `group` and one `target` per backend, following the existing `fampnn`/`bindcraft` pattern:
-
-```hcl
-group "<tool>" {
-  targets = ["<tool>-cuda", "<tool>-rocm"]  # drop "-rocm" if not supported
-}
-
-target "<tool>-cuda" {
-  dockerfile = "Dockerfile.<tool>.dockerfile"
-  args = {
-    GPU_BACKEND = "cuda"
-  }
-  tags = ["${REGISTRY}/<tool>:${VERSION}-cuda"]
-  platforms = ["linux/amd64"]
-}
-
-target "<tool>-rocm" {
-  dockerfile = "Dockerfile.<tool>.dockerfile"
-  args = {
-    GPU_BACKEND = "rocm"
-  }
-  tags = ["${REGISTRY}/<tool>:${VERSION}-rocm"]
-  platforms = ["linux/amd64"]
-}
-```
-
-Add `"<tool>"` to the `default` group's `targets` list so it's included in full builds.
-
-### 3.3 Test the build locally before touching CI
-
-```bash
-cd docker
-docker buildx bake <tool> --set "*.push=false"
-```
-
-This builds (but doesn't push) every target in the `<tool>` group, using your local Docker
-daemon. Fix any build errors here first — it's much faster to iterate locally than via CI.
-
-### 3.4 Add a build job to the workflow
-
-In `.github/workflows/build-containers.yml`:
-
-1. Add a filter entry under the `changes` job so edits to this tool's Dockerfile (or
-   `docker-bake.hcl`) are detected:
-   ```yaml
-   <tool>:
-     - 'docker/Dockerfile.<tool>.dockerfile'
-     - 'docker/docker-bake.hcl'
-   ```
-   and add `<tool>: ${{ steps.filter.outputs.<tool> }}` to the `changes` job's `outputs`.
-2. Copy an existing `build-<tool>` job block (e.g. `build-fampnn`), rename it, point its `if:` at
-   `needs.changes.outputs.<tool>`, and set its matrix to `[<tool>-cuda, <tool>-rocm]` (or just
-   `[<tool>-cuda]` if there's no ROCm target).
-
-This keeps each tool's rebuilds isolated — editing one tool's Dockerfile won't trigger a rebuild
-of every other container.
-
-### 3.5 Push and verify
-
-Push to a branch covered by the workflow's `push.branches` filter (or use **Run workflow** /
-`workflow_dispatch`, which always runs regardless of which files changed). Confirm in the Actions
-tab that only the job(s) for the tool you touched ran.
-
-### 3.6 Pull the built image with Apptainer
-
-These are regular multi-layer OCI images, so use the `docker://` transport (not `oras://`, which
-is for single-layer SIF artifacts):
-
-```bash
-apptainer pull <tool>_<version>-cuda.sif docker://ghcr.io/papenfusslab/<tool>:<version>-cuda
-```
-
-If the GHCR package is private, authenticate first:
-```bash
-apptainer remote login --username <gh-username> --password <PAT-with-read:packages> docker://ghcr.io
-```
+No Docker is needed on the cluster, so the workflow is the only build path.
 
 ---
 
-## 4. Checklist summary
+## 4. Testing on the cluster
 
-- [ ] Copy `docker/Dockerfile.template.dockerfile` → `docker/Dockerfile.<tool>.dockerfile`, fill in placeholders
-- [ ] Confirm ROCm viability of GPU dependencies (or go CUDA-only)
-- [ ] Add `group`/`target` blocks to `docker/docker-bake.hcl`, add tool to `default` group
-- [ ] `docker buildx bake <tool> --set "*.push=false"` locally to validate the build
-- [ ] Add a `changes` filter entry and a `build-<tool>` job in `.github/workflows/build-containers.yml`
-- [ ] Push and confirm only the new tool's job(s) run
-- [ ] Pull with `apptainer pull ... docker://...` to confirm the published image works
+CI runs the smoke test on CPU only. Pull the image and repeat it with a GPU:
+
+```bash
+apptainer pull fampnn_v3.1-rocm.sif docker://ghcr.io/hardylaboratory/proteindj/fampnn:v3.1-rocm
+apptainer exec --rocm --env SMOKE_GPU=1 fampnn_v3.1-rocm.sif bash /opt/smoke/smoke_test.sh
+```
+
+Use `--nv` for CUDA images. `SMOKE_GPU=1` additionally requires torch and jax to see a device.
+Packages are private by default; authenticate with
+`apptainer remote login --username <user> docker://ghcr.io` or make them public.
+
+Run the pipeline with `--gpu_backend rocm` to select the ROCm images.
+
+### Shared image directory
+
+Nextflow resolves a container first in `apptainer.libraryDir` (read-only), then in
+`apptainer.cacheDir`. The file name is the image reference with `/` and `:` replaced by `-` plus
+`.img`, for example `ghcr.io-hardylaboratory-proteindj-fampnn-v3.1-rocm.img`. An administrator can
+pre-pull each release into the library directory so users never convert images.

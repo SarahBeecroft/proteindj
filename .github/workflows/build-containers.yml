@@ -6,47 +6,54 @@ on:
     paths:
       - "docker/**"
       - ".github/workflows/build-containers.yml"
-  workflow_dispatch: {}
+      - ".github/scripts/bake_matrix.py"
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: 'Comma-separated bake targets (e.g. fampnn-rocm,boltz2-cuda) or "all"'
+        default: all
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  # Figures out which tool(s) actually changed, so a Dockerfile edit only rebuilds its own images.
-  changes:
-    name: Detect changed containers
+  # Lists the bake targets whose Dockerfile (or shared files) changed, so unrelated images aren't rebuilt.
+  plan:
+    name: Plan builds
     runs-on: ubuntu-24.04
     outputs:
-      bindcraft: ${{ steps.filter.outputs.bindcraft }}
-      fampnn: ${{ steps.filter.outputs.fampnn }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      any: ${{ steps.matrix.outputs.any }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
         with:
-          # docker-bake.hcl holds shared tags/args, so treat it as a dependency of every tool.
-          filters: |
-            bindcraft:
-              - 'docker/Dockerfile.bindcraft.dockerfile'
-              - 'docker/docker-bake.hcl'
-            fampnn:
-              - 'docker/Dockerfile.fampnn.dockerfile'
-              - 'docker/docker-bake.hcl'
+          fetch-depth: 0
+      - id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          TARGETS: ${{ inputs.targets }}
+        run: python3 .github/scripts/bake_matrix.py
 
-  build-bindcraft:
+  build:
     name: build (${{ matrix.target }})
-    needs: changes
-    if: needs.changes.outputs.bindcraft == 'true' || github.event_name == 'workflow_dispatch'
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
-      # One bake target per job so each backend gets its own runner disk/log.
-      matrix:
-        target: [bindcraft-cuda, bindcraft-rocm]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # GPU images are large; hosted runners start with little free disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker image prune --all --force
+          df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -58,6 +65,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The registry cache avoids the 10 GB GitHub Actions cache limit.
       - name: Build and push ${{ matrix.target }}
         uses: docker/bake-action@v5
         with:
@@ -65,39 +73,17 @@ jobs:
           targets: ${{ matrix.target }}
           push: true
           set: |
-            *.cache-from=type=gha,scope=${{ matrix.target }}
-            *.cache-to=type=gha,mode=max,scope=${{ matrix.target }}
+            *.cache-from=type=registry,ref=ghcr.io/${{ github.repository_owner }}/proteindj/cache:${{ matrix.target }}
+            *.cache-to=type=registry,ref=ghcr.io/${{ github.repository_owner }}/proteindj/cache:${{ matrix.target }},mode=max,image-manifest=true,oci-mediatypes=true
 
-  build-fampnn:
-    name: build (${{ matrix.target }})
-    needs: changes
-    if: needs.changes.outputs.fampnn == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      # One bake target per job so each backend gets its own runner disk/log.
-      matrix:
-        target: [fampnn-cuda, fampnn-rocm]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Free space before testing
+        run: |
+          docker buildx prune --all --force
+          docker system prune --all --force --volumes
+          df -h /
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push ${{ matrix.target }}
-        uses: docker/bake-action@v5
-        with:
-          workdir: docker
-          targets: ${{ matrix.target }}
-          push: true
-          set: |
-            *.cache-from=type=gha,scope=${{ matrix.target }}
-            *.cache-to=type=gha,mode=max,scope=${{ matrix.target }}
+      # CPU-only import and --help checks; GPU runs are tested on the cluster.
+      - name: Smoke test ${{ matrix.image }}
+        run: |
+          docker pull "${{ matrix.image }}"
+          docker run --rm "${{ matrix.image }}" bash /opt/smoke/smoke_test.sh
