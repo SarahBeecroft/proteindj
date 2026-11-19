@@ -61,6 +61,14 @@ workflow {
         throw new IllegalArgumentException("Invalid design mode: ${params.design_mode}. Must be one of: ${VALID_MODES.join(', ')}")
     }
 
+    if (!(params.gpu_backend in ['cuda', 'rocm'])) {
+        throw new IllegalArgumentException("Invalid gpu_backend: ${params.gpu_backend}. Must be 'cuda' or 'rocm'.")
+    }
+    // RFD4 depends on NVIDIA-only cuEquivariance kernels.
+    if (params.gpu_backend == 'rocm' && params.design_mode == 'rfd4_denovo') {
+        throw new IllegalArgumentException("design_mode 'rfd4_denovo' is not available with gpu_backend 'rocm'.")
+    }
+
     // Auto-detect monomer vs binder behavior for RFdiffusion/BoltzGen modes (computed once, used throughout)
     def running_fold_design = !params.skip_fold && !params.skip_fold_seq && !params.skip_fold_seq_pred
     def is_binder_mode

@@ -84,6 +84,7 @@ process RunBoltz {
             --sampling_steps ${params.boltz_sampling_steps} \
             ${params.boltz_use_potentials ? '--use_potentials' : ''} \
             --cache /boltzcache \
+            ${params.gpu_backend == 'rocm' && !(params.boltz_extra_config ?: '').contains('--no_kernels') ? '--no_kernels' : ''} \
             ${params.boltz_extra_config ? params.boltz_extra_config : ''} \
             2>&1 | tee boltz_${batch_id}.log
     

@@ -56,7 +56,7 @@ process RunMPNN {
         -relax_convergence_max_cycles ${params.mpnn_relax_convergence_max_cycles}\
         -seqs_per_struct ${params.seqs_per_design} \
         -temperature ${params.mpnn_temperature} \
-        -relax_platform "CUDA" \
+        -relax_platform "${params.gpu_backend == 'rocm' ? 'HIP' : 'CUDA'}" \
         -debug \
         ${params.mpnn_extra_config ? params.mpnn_extra_config : ''} \
         2>&1 | tee mpnn_${batch_id}.log
